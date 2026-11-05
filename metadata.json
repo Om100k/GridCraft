@@ -1,0 +1,6 @@
+{
+  "name": "GridCraft",
+  "description": "Create custom tables and grids, customize cell colors and text, zoom in and out interactively, and export beautiful PDF documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
