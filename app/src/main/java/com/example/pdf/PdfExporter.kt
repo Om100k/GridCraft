@@ -17,6 +17,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import android.content.ContentValues
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+
 enum class PageOrientation {
   PORTRAIT,
   LANDSCAPE
@@ -37,6 +43,49 @@ data class PdfExportOptions(
 )
 
 object PdfExporter {
+
+  fun savePdfToPublicDownloads(
+    context: Context,
+    grid: TableGrid,
+    options: PdfExportOptions = PdfExportOptions()
+  ): Pair<Uri, String>? {
+    val sanitizedTitle = grid.title.replace(Regex("[^a-zA-Z0-9_-]"), "_").ifBlank { "Table" }
+    val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault()).format(Date())
+    val fileName = "Table_${sanitizedTitle}_$timestamp.pdf"
+
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val contentValues = ContentValues().apply {
+          put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+          put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+          put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+          put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+        if (uri != null) {
+          context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+            exportToStream(grid, outputStream, options)
+          }
+          contentValues.clear()
+          contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+          context.contentResolver.update(uri, contentValues, null, null)
+          return Pair(uri, fileName)
+        }
+      } else {
+        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        if (!downloadsDir.exists()) downloadsDir.mkdirs()
+        val file = File(downloadsDir, fileName)
+        FileOutputStream(file).use { outputStream ->
+          exportToStream(grid, outputStream, options)
+        }
+        val uri = Uri.fromFile(file)
+        return Pair(uri, fileName)
+      }
+    } catch (e: Exception) {
+      e.printStackTrace()
+    }
+    return null
+  }
 
   fun exportToCacheFile(
     context: Context,

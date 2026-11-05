@@ -228,7 +228,7 @@ fun TableEditorScreen(
               modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(6.dp))
-            Text(text = "PDF", fontWeight = FontWeight.Bold)
+            Text(text = "Save PDF", fontWeight = FontWeight.Bold)
           }
 
           IconButton(onClick = { overflowMenuOpen = true }) {
@@ -385,6 +385,16 @@ fun TableEditorScreen(
                   selectedLabelColor = MaterialTheme.colorScheme.onSecondaryContainer
                 )
               )
+
+              FilledTonalButton(
+                onClick = onOpenPdfExport,
+                modifier = Modifier.height(30.dp).testTag("subbar_save_pdf_button"),
+                shape = RoundedCornerShape(8.dp)
+              ) {
+                Icon(Icons.Filled.PictureAsPdf, contentDescription = null, modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Save PDF", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+              }
             }
           }
         }
@@ -452,6 +462,7 @@ fun TableEditorScreen(
             onZoomOut = onZoomOut,
             onResetZoom = onResetZoom,
             onToggleFit = { fitToScreenWidth = !fitToScreenWidth },
+            onSavePdf = onOpenPdfExport,
             modifier = Modifier
               .align(Alignment.BottomEnd)
               .padding(end = 16.dp, bottom = if (selectedCell != null) 92.dp else 24.dp)
@@ -851,6 +862,7 @@ fun ZoomFloatingControls(
   onZoomOut: () -> Unit,
   onResetZoom: () -> Unit,
   onToggleFit: () -> Unit,
+  onSavePdf: () -> Unit,
   modifier: Modifier = Modifier
 ) {
   Surface(
@@ -905,6 +917,20 @@ fun ZoomFloatingControls(
           imageVector = if (fitToScreen) Icons.Filled.FitScreen else Icons.Filled.ViewColumn,
           contentDescription = "Toggle column fit",
           tint = if (fitToScreen) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+          modifier = Modifier.size(18.dp)
+        )
+      }
+
+      Spacer(modifier = Modifier.width(2.dp))
+
+      IconButton(
+        onClick = onSavePdf,
+        modifier = Modifier.size(34.dp).testTag("zoom_bar_save_pdf_button")
+      ) {
+        Icon(
+          imageVector = Icons.Filled.PictureAsPdf,
+          contentDescription = "Save PDF",
+          tint = MaterialTheme.colorScheme.primary,
           modifier = Modifier.size(18.dp)
         )
       }

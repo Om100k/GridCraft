@@ -6,6 +6,9 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -20,10 +23,15 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.Share
@@ -33,11 +41,13 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -68,7 +78,6 @@ import com.example.pdf.PdfExportOptions
 import com.example.pdf.PdfExporter
 import kotlinx.coroutines.launch
 import java.io.File
-import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -82,7 +91,7 @@ fun PdfExportModal(
 ) {
   val context = LocalContext.current
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-  val scope = rememberCoroutineScope()
+  val scrollState = rememberScrollState()
 
   var orientation by remember { mutableStateOf(initialOptions.orientation) }
   var pageSize by remember { mutableStateOf(initialOptions.pageSize) }
@@ -90,8 +99,9 @@ fun PdfExportModal(
   var includeTimestamp by remember { mutableStateOf(initialOptions.includeTimestamp) }
   var includePageNumbers by remember { mutableStateOf(initialOptions.includePageNumbers) }
 
-  var isExporting by remember { mutableStateOf(false) }
-  var lastGeneratedFile by remember { mutableStateOf<File?>(null) }
+  var savedSuccessFileMessage by remember { mutableStateOf<String?>(null) }
+  var savedFileUri by remember { mutableStateOf<Uri?>(null) }
+  var isSaving by remember { mutableStateOf(false) }
 
   val currentOptions = PdfExportOptions(
     orientation = orientation,
@@ -110,18 +120,41 @@ fun PdfExportModal(
         context.contentResolver.openOutputStream(uri)?.use { outputStream ->
           PdfExporter.exportToStream(tableGrid, outputStream, currentOptions)
         }
+        savedFileUri = uri
+        savedSuccessFileMessage = "Saved PDF to selected location!"
         Toast.makeText(context, "PDF saved successfully!", Toast.LENGTH_LONG).show()
-        onDismiss()
       } catch (e: Exception) {
         Toast.makeText(context, "Failed to save PDF: ${e.message}", Toast.LENGTH_LONG).show()
       }
     }
   }
 
+  fun performSaveToDownloads() {
+    isSaving = true
+    try {
+      val result = PdfExporter.savePdfToPublicDownloads(context, tableGrid, currentOptions)
+      if (result != null) {
+        savedFileUri = result.first
+        savedSuccessFileMessage = "Saved to Downloads: ${result.second}"
+        Toast.makeText(context, "Saved to Downloads: ${result.second}", Toast.LENGTH_LONG).show()
+      } else {
+        // Fallback to cache file + share if direct media store couldn't write
+        val file = PdfExporter.exportToCacheFile(context, tableGrid, currentOptions)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        savedFileUri = uri
+        savedSuccessFileMessage = "Saved PDF file (${file.name})"
+        Toast.makeText(context, "PDF generated successfully!", Toast.LENGTH_SHORT).show()
+      }
+    } catch (e: Exception) {
+      Toast.makeText(context, "Save error: ${e.message}", Toast.LENGTH_LONG).show()
+    } finally {
+      isSaving = false
+    }
+  }
+
   fun sharePdfFile() {
     try {
       val file = PdfExporter.exportToCacheFile(context, tableGrid, currentOptions)
-      lastGeneratedFile = file
       val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
       val shareIntent = Intent(Intent.ACTION_SEND).apply {
         type = "application/pdf"
@@ -137,9 +170,10 @@ fun PdfExportModal(
 
   fun viewPdfFile() {
     try {
-      val file = lastGeneratedFile ?: PdfExporter.exportToCacheFile(context, tableGrid, currentOptions)
-      lastGeneratedFile = file
-      val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+      val uri = savedFileUri ?: run {
+        val file = PdfExporter.exportToCacheFile(context, tableGrid, currentOptions)
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+      }
       val viewIntent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, "application/pdf")
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -147,7 +181,7 @@ fun PdfExportModal(
       val chooser = Intent.createChooser(viewIntent, "Open PDF with…")
       context.startActivity(chooser)
     } catch (e: Exception) {
-      Toast.makeText(context, "No PDF viewer found on device. You can save or share the PDF.", Toast.LENGTH_LONG).show()
+      Toast.makeText(context, "No PDF viewer found on device. PDF is saved to Downloads.", Toast.LENGTH_LONG).show()
     }
   }
 
@@ -158,37 +192,195 @@ fun PdfExportModal(
     Column(
       modifier = Modifier
         .fillMaxWidth()
+        .verticalScroll(scrollState)
         .padding(horizontal = 20.dp, vertical = 6.dp)
         .navigationBarsPadding()
     ) {
       // Header
-      Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-          modifier = Modifier
-            .size(44.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer),
-          contentAlignment = Alignment.Center
-        ) {
-          Icon(
-            imageVector = Icons.Filled.PictureAsPdf,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(24.dp)
-          )
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+          Box(
+            modifier = Modifier
+              .size(44.dp)
+              .clip(RoundedCornerShape(12.dp))
+              .background(MaterialTheme.colorScheme.primaryContainer),
+            contentAlignment = Alignment.Center
+          ) {
+            Icon(
+              imageVector = Icons.Filled.PictureAsPdf,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(24.dp)
+            )
+          }
+          Spacer(modifier = Modifier.width(12.dp))
+          Column {
+            Text(
+              text = "Export Table as PDF",
+              fontWeight = FontWeight.Bold,
+              style = MaterialTheme.typography.titleLarge
+            )
+            Text(
+              text = "${tableGrid.title} • ${tableGrid.rowCount} Rows × ${tableGrid.colCount} Cols",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          }
         }
-        Spacer(modifier = Modifier.width(12.dp))
-        Column {
+
+        IconButton(onClick = onDismiss) {
+          Icon(Icons.Filled.Close, contentDescription = "Close")
+        }
+      }
+
+      Spacer(modifier = Modifier.height(16.dp))
+
+      // SUCCESS BANNER (If already saved)
+      AnimatedVisibility(
+        visible = savedSuccessFileMessage != null,
+        enter = fadeIn(),
+        exit = fadeOut()
+      ) {
+        Card(
+          shape = RoundedCornerShape(12.dp),
+          colors = CardDefaults.cardColors(containerColor = Color(0xFFDCFCE7)),
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 14.dp)
+        ) {
+          Row(
+            modifier = Modifier.padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+              imageVector = Icons.Filled.CheckCircle,
+              contentDescription = null,
+              tint = Color(0xFF15803D),
+              modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "PDF Saved Successfully!",
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF14532D)
+              )
+              Text(
+                text = savedSuccessFileMessage.orEmpty(),
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(0xFF166534)
+              )
+            }
+            FilledTonalButton(
+              onClick = { viewPdfFile() },
+              colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFF15803D), contentColor = Color.White),
+              shape = RoundedCornerShape(8.dp)
+            ) {
+              Text("Open")
+            }
+          }
+        }
+      }
+
+      // PRIMARY ACTION BUTTONS CARD (Right at the top, impossible to miss)
+      Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+          containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+      ) {
+        Column(modifier = Modifier.padding(16.dp)) {
           Text(
-            text = "Export Table as PDF",
+            text = "Save & Export Options",
             fontWeight = FontWeight.Bold,
-            style = MaterialTheme.typography.titleLarge
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurface
           )
-          Text(
-            text = "${tableGrid.title} • ${tableGrid.rowCount} × ${tableGrid.colCount}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-          )
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // 1. PRIMARY SAVE TO DOWNLOADS BUTTON
+          Button(
+            onClick = { performSaveToDownloads() },
+            enabled = !isSaving,
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(54.dp)
+              .testTag("save_pdf_downloads_button"),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = MaterialTheme.colorScheme.primary
+            )
+          ) {
+            if (isSaving) {
+              CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+              Spacer(modifier = Modifier.width(8.dp))
+              Text("Saving PDF…", fontWeight = FontWeight.Bold)
+            } else {
+              Icon(Icons.Filled.Download, contentDescription = null, modifier = Modifier.size(22.dp))
+              Spacer(modifier = Modifier.width(8.dp))
+              Text("Save PDF to Device", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+          }
+
+          Spacer(modifier = Modifier.height(10.dp))
+
+          // Secondary Action buttons: Save As, Share, View
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+          ) {
+            // Save As (Pick Folder / SAF)
+            FilledTonalButton(
+              onClick = {
+                val sanitized = tableGrid.title.replace(Regex("[^a-zA-Z0-9_-]"), "_")
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                savePdfLauncher.launch("${sanitized}_$timestamp.pdf")
+              },
+              modifier = Modifier
+                .weight(1f)
+                .height(46.dp)
+                .testTag("save_as_pdf_button"),
+              shape = RoundedCornerShape(10.dp)
+            ) {
+              Icon(Icons.Filled.FolderOpen, contentDescription = null, modifier = Modifier.size(17.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Save As…", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            // Share PDF
+            FilledTonalButton(
+              onClick = { sharePdfFile() },
+              modifier = Modifier
+                .weight(1f)
+                .height(46.dp)
+                .testTag("share_pdf_button"),
+              shape = RoundedCornerShape(10.dp)
+            ) {
+              Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(17.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("Share", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+
+            // Open / View
+            OutlinedButton(
+              onClick = { viewPdfFile() },
+              modifier = Modifier
+                .weight(1f)
+                .height(46.dp)
+                .testTag("view_pdf_button"),
+              shape = RoundedCornerShape(10.dp)
+            ) {
+              Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(17.dp))
+              Spacer(modifier = Modifier.width(4.dp))
+              Text("View", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
+          }
         }
       }
 
@@ -208,7 +400,7 @@ fun PdfExportModal(
         // Portrait
         OrientationCard(
           title = "Portrait",
-          subtitle = "Vertical layout",
+          subtitle = "Standard vertical",
           icon = Icons.Filled.StayCurrentPortrait,
           isSelected = orientation == PageOrientation.PORTRAIT,
           onClick = { orientation = PageOrientation.PORTRAIT },
@@ -218,7 +410,7 @@ fun PdfExportModal(
         // Landscape
         OrientationCard(
           title = "Landscape",
-          subtitle = "Wider tables",
+          subtitle = "Best for wide tables",
           icon = Icons.Filled.StayCurrentLandscape,
           isSelected = orientation == PageOrientation.LANDSCAPE,
           onClick = { orientation = PageOrientation.LANDSCAPE },
@@ -300,65 +492,7 @@ fun PdfExportModal(
         }
       }
 
-      Spacer(modifier = Modifier.height(20.dp))
-
-      // Action Buttons
-      Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        // Primary: Save PDF to Device
-        Button(
-          onClick = {
-            val sanitized = tableGrid.title.replace(Regex("[^a-zA-Z0-9_-]"), "_")
-            val timestamp = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-            savePdfLauncher.launch("${sanitized}_$timestamp.pdf")
-          },
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .testTag("save_pdf_device_button"),
-          shape = RoundedCornerShape(14.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary
-          )
-        ) {
-          Icon(Icons.Filled.Download, contentDescription = null)
-          Spacer(modifier = Modifier.width(8.dp))
-          Text("Save PDF to Device", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-        }
-
-        // Secondary: Share and View
-        Row(
-          modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-          FilledTonalButton(
-            onClick = { sharePdfFile() },
-            modifier = Modifier
-              .weight(1f)
-              .height(48.dp)
-              .testTag("share_pdf_button"),
-            shape = RoundedCornerShape(12.dp)
-          ) {
-            Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Share PDF")
-          }
-
-          OutlinedButton(
-            onClick = { viewPdfFile() },
-            modifier = Modifier
-              .weight(1f)
-              .height(48.dp)
-              .testTag("view_pdf_button"),
-            shape = RoundedCornerShape(12.dp)
-          ) {
-            Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(6.dp))
-            Text("Open / View")
-          }
-        }
-      }
-
-      Spacer(modifier = Modifier.height(16.dp))
+      Spacer(modifier = Modifier.height(24.dp))
     }
   }
 }
